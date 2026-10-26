@@ -1,0 +1,59 @@
+version: 2.1
+
+# Build a Linux kernel (x86_64 defconfig) on the CircleCI Free plan.
+# Free plan: max 1 hour per job; docker "large" = 4 vCPU / 8 GB, 20 credits/min.
+parameters:
+  kernel_version:
+    type: string
+    default: "6.6.58"   # LTS; change as needed
+
+jobs:
+  build-kernel:
+    docker:
+      - image: cimg/base:current
+    resource_class: large
+    steps:
+      - checkout
+      - run:
+          name: Install build dependencies
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends \
+              build-essential bc bison flex libssl-dev libelf-dev \
+              libncurses-dev dwarves cpio kmod xz-utils ccache
+      - restore_cache:
+          keys:
+            - ccache-v1-<< pipeline.parameters.kernel_version >>-
+      - run:
+          name: Download kernel source
+          command: |
+            V=<< pipeline.parameters.kernel_version >>
+            MAJOR=${V%%.*}
+            curl -fsSL "https://cdn.kernel.org/pub/linux/kernel/v${MAJOR}.x/linux-${V}.tar.xz" -o linux.tar.xz
+            tar -xf linux.tar.xz
+            mv "linux-${V}" linux
+      - run:
+          name: Build (defconfig)
+          no_output_timeout: 30m
+          command: |
+            export CCACHE_DIR=$HOME/.ccache PATH=/usr/lib/ccache:$PATH
+            cd linux
+            make defconfig
+            make -j"$(nproc)" bzImage modules 2>&1 | tee ../build.log | grep -E '^(  CC|  LD|  AR|Kernel|ERROR|error)' | awk 'NR%200==1'
+            ls -lh arch/x86/boot/bzImage
+      - save_cache:
+          key: ccache-v1-<< pipeline.parameters.kernel_version >>-{{ epoch }}
+          paths:
+            - ~/.ccache
+      - run:
+          name: Collect artifacts
+          command: |
+            mkdir -p /tmp/artifacts
+            cp linux/arch/x86/boot/bzImage linux/.config build.log /tmp/artifacts/
+      - store_artifacts:
+          path: /tmp/artifacts
+
+workflows:
+  build:
+    jobs:
+      - build-kernel
